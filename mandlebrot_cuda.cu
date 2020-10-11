@@ -5,20 +5,28 @@
 #include <SFML/Graphics/VertexArray.hpp>
 #include <SFML/Window/Event.hpp>
 #include <SFML/Window/Mouse.hpp>
+#include <bits/stdint-uintn.h>
+#include <cstddef>
 #include <cstdio>
 #include <sys/types.h>
 #include <math.h>
 
-
-#define ZOOMRATE 2.0
-
-inline double maxd(double a, double b) { return a>b ? a:b; }
-inline double mind(double a, double b) { return a<b ? a:b; }
+#include <assert.h>
+#include "helper_cuda.h"
 
 
+#define ZOOMRATE 1.2
+
+inline double __host__ __device__ maxd(double a, double b) { return a>b ? a:b; }
+inline double __host__ __device__ mind(double a, double b) { return a<b ? a:b; }
 const unsigned W=1920,H=1080,Size= W*H*4,max_it=1000;
+
+const unsigned Threads = 512;
+const unsigned Blocks  = (W*H + (Threads-1)) / Threads;
+extern "C" {
+
 const double cUpperX=1.0,cLowerX=-2.5,cLowerY=-1.0,cUpperY=1.0;
-const uint8_t lights[360]={
+const uint8_t lightsPreInit[360]={
   0,   0,   0,   0,   0,   1,   1,   2, 
   2,   3,   4,   5,   6,   7,   8,   9, 
  11,  12,  13,  15,  17,  18,  20,  22, 
@@ -65,20 +73,19 @@ const uint8_t lights[360]={
   0,   0,   0,   0,   0,   0,   0,   0, 
   0,   0,   0,   0,   0,   0,   0,   0};
 
-
-void mandlebrot (sf::Texture & texture,sf::Uint8 pixels[],
+__device__ __constant__ uint8_t lights[sizeof(lightsPreInit)/sizeof(*lightsPreInit)];
+}
+void __global__ mandlebrot (sf::Uint8 pixels[],
 		double UpperX,double LowerX,double UpperY,double LowerY)
 {
-	#pragma omp parallel shared(pixels)
-	{
+	unsigned pixno = blockIdx.x * blockDim.x + threadIdx.x;
+    	if(pixno >= W*H) return;
+	const unsigned Px = pixno % W;
+    	const unsigned Py = pixno / W;
 	double x0,y0,x,y,xtemp;
 	unsigned it,ang;
-	#pragma omp for schedule(dynamic)
-	for (unsigned Px=0;Px<W;Px++)
-		for (unsigned Py=0; Py<H;Py++)
-		{
-			x0= ((UpperX-LowerX)*((double) Px )/W) + LowerX;
-			y0=((UpperY-LowerY)*((double) Py)/H) +LowerY;
+			x0= ((UpperX-LowerX)*( Px )/W) + LowerX;
+			y0=((UpperY-LowerY)*(Py)/H) +LowerY;
 			x=0.0;
 			y=0.0;
 			it=0;
@@ -101,14 +108,14 @@ void mandlebrot (sf::Texture & texture,sf::Uint8 pixels[],
 
 
 
-		}
-	}
+		
+	
 
-	texture.update(pixels);
+	
 }
 
 
-void zoom(int mousedelta,unsigned mousex,unsigned mousey,
+void __host__ __device__ zoom(int mousedelta,unsigned mousex,unsigned mousey,
 		double & UpperX,double & LowerX,double & UpperY,double & LowerY)
 {
 	double midX = (UpperX-LowerX)*((double)mousex/(double) W),midY=(UpperY-LowerY)*((double) mousey/(double) H);
@@ -134,16 +141,22 @@ int main()
 {
 	double UpperX=1.0,LowerX=-2.5,LowerY=-1.0,UpperY=1.0;
 	
+	#define PreInit(symbol, from) checkCudaErrors(cudaMemcpyToSymbol(symbol, &from, sizeof(from)))
+    	PreInit(lights, lightsPreInit);
+        checkCudaErrors(cudaDeviceSetLimit(cudaLimitStackSize,2500));
+	static sf::Uint8 pixels[Size],*p=NULL;
+	checkCudaErrors(cudaMalloc((void**)&p, sizeof(pixels))); assert(p!=NULL);
 	sf::RenderWindow window(sf::VideoMode(W, H), "Mandlebrot!");
 	window.setFramerateLimit(60);
-	sf::Uint8* pixels = new sf::Uint8[Size];
-
+	
     	sf::Texture texture;
 	texture.create(W, H); 
 
 	sf::Sprite sprite(texture);
 
-	mandlebrot(texture, pixels,UpperX,LowerX,UpperY,LowerY);
+	mandlebrot<<<Blocks,Threads,0>>> (p,UpperX,LowerX,UpperY,LowerY);
+	checkCudaErrors(cudaMemcpy(pixels, p, sizeof(pixels), cudaMemcpyDeviceToHost));
+	texture.update(pixels);
 	while (window.isOpen())
     {
         	sf::Event event;
@@ -158,7 +171,9 @@ int main()
 					{
 						zoom(event.mouseWheelScroll.delta,event.mouseWheelScroll.x,event.mouseWheelScroll.y,UpperX,LowerX,UpperY,LowerY);
 						
-						mandlebrot(texture, pixels,UpperX,LowerX,UpperY,LowerY);
+						mandlebrot<<<Blocks,Threads,0>>> (p,UpperX,LowerX,UpperY,LowerY);
+						checkCudaErrors(cudaMemcpy(pixels, p, sizeof(pixels), cudaMemcpyDeviceToHost));
+	texture.update(pixels);
 				
 					}
         				break;
@@ -172,6 +187,8 @@ int main()
         	window.draw(sprite);
         	window.display();
     	}
+	checkCudaErrors(cudaFree(p));
+
 
     	return 0;
 }
