@@ -4,13 +4,20 @@
 #include <SFML/Graphics/Texture.hpp>
 #include <SFML/Graphics/VertexArray.hpp>
 #include <SFML/Window/Event.hpp>
+#include <SFML/Window/Mouse.hpp>
 #include <cstdio>
 #include <sys/types.h>
 #include <math.h>
 #include <iostream>
 
-const unsigned W=1920,H=1080,Size= W*H*4,max_it=1000;
+#define ZOOMRATE 2.0
 
+inline double maxd(double a, double b) { return a>b ? a:b; }
+inline double mind(double a, double b) { return a<b ? a:b; }
+
+
+const unsigned W=1920,H=1080,Size= W*H*4,max_it=1000;
+const double cUpperX=1.0,cLowerX=-2.5,cLowerY=-1.0,cUpperY=1.0;
 const uint8_t lights[360]={
   0,   0,   0,   0,   0,   1,   1,   2, 
   2,   3,   4,   5,   6,   7,   8,   9, 
@@ -59,7 +66,8 @@ const uint8_t lights[360]={
   0,   0,   0,   0,   0,   0,   0,   0};
 
 
-void mandlebrot (sf::Texture & texture,sf::Uint8 pixels[])
+void mandlebrot (sf::Texture & texture,sf::Uint8 pixels[],
+		double UpperX,double LowerX,double UpperY,double LowerY)
 {
 	#pragma omp parallel shared(pixels)
 	{
@@ -69,8 +77,8 @@ void mandlebrot (sf::Texture & texture,sf::Uint8 pixels[])
 	for (unsigned Px=0;Px<W;Px++)
 		for (unsigned Py=0; Py<H;Py++)
 		{
-			x0= (3.5*((double) Px )/W) -2.5;
-			y0=(2*((double) Py)/H) -1;
+			x0= ((UpperX-LowerX)*((double) Px )/W) + LowerX;
+			y0=((UpperY-LowerY)*((double) Py)/H) +LowerY;
 			x=0.0;
 			y=0.0;
 			it=0;
@@ -100,10 +108,32 @@ void mandlebrot (sf::Texture & texture,sf::Uint8 pixels[])
 }
 
 
+void zoom(int mousedelta,unsigned mousex,unsigned mousey,
+		double & UpperX,double & LowerX,double & UpperY,double & LowerY)
+{
+	double midX = (UpperX-LowerX)*((double)mousex/(double) W),midY=(UpperY-LowerY)*((double) mousey/(double) H);
+	double xInt,yInt,temp;
+	if (mousedelta==1)//zoom
+	{
+		temp = 1.0/(ZOOMRATE*2.0);
+	} else if (mousedelta==-1)//unzoom
+	{
+		temp = ZOOMRATE*2.0;
+	}
+	xInt = (UpperX -LowerX)*temp;
+	yInt = (UpperY-LowerY)*temp;
+	UpperX = mind(midX+xInt, cUpperX);
+	LowerX = maxd(midX-xInt, cLowerX);
+	UpperY = mind(midY+yInt,cUpperY);
+	LowerY = maxd(midY-yInt,cLowerY);
+}
+
+
+
 int main()
 {
-	double UpperX=2.5,LowerX=-1.0,LowerY=-1.0,UpperY=1.0;
-	unsigned mousex,mousey;
+	double UpperX=1.0,LowerX=-2.5,LowerY=-1.0,UpperY=1.0;
+	
 	sf::RenderWindow window(sf::VideoMode(W, H), "Mandlebrot!");
 	window.setFramerateLimit(60);
 	sf::Uint8* pixels = new sf::Uint8[Size];
@@ -113,7 +143,7 @@ int main()
 
 	sf::Sprite sprite(texture);
 
-	mandlebrot(texture, pixels);
+	mandlebrot(texture, pixels,UpperX,LowerX,UpperY,LowerY);
 	while (window.isOpen())
     {
         	sf::Event event;
@@ -125,15 +155,13 @@ int main()
 					break;
 				case sf::Event::MouseWheelScrolled:
 					if (event.mouseWheelScroll.wheel == sf::Mouse::VerticalWheel)
-        std::cout << "wheel type: vertical" << std::endl;
-    else if (event.mouseWheelScroll.wheel == sf::Mouse::HorizontalWheel)
-        std::cout << "wheel type: horizontal" << std::endl;
-    else
-        std::cout << "wheel type: unknown" << std::endl;
-    std::cout << "wheel movement: " << event.mouseWheelScroll.delta << std::endl;
-    std::cout << "mouse x: " << event.mouseWheelScroll.x << std::endl;
-    std::cout << "mouse y: " << event.mouseWheelScroll.y << std::endl;
-    break;
+					{
+						zoom(event.mouseWheelScroll.delta,event.mouseWheelScroll.x,event.mouseWheelScroll.y,UpperX,LowerX,UpperY,LowerY);
+						
+						mandlebrot(texture, pixels,UpperX,LowerX,UpperY,LowerY);
+				
+					}
+        				break;
 				default:
 					break;
 
